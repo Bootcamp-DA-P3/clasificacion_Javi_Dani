@@ -1,0 +1,10 @@
+.venv/
+.venv-1/
+__pycache__/
+.git/
+.gitignore
+.vscode/
+NoteBooks/
+*.ipynb
+*.pdf
+.env
