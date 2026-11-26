@@ -8,3 +8,4 @@ NoteBooks/
 *.ipynb
 *.pdf
 .env
+database/

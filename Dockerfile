@@ -1,41 +1,19 @@
-
-
-
-# =====================================================
-# 1. IMAGEN BASE DE PYTHON
-# =====================================================
-
+# 1. Imagen base de Python
 FROM python:3.14-slim
 
-
-# =====================================================
-# 2. DIRECTORIO DE TRABAJO
-# =====================================================
-
+# 2. Directorio de trabajo
 WORKDIR /app
 
-
-# =====================================================
-# 3. INSTALAR DEPENDENCIAS
-# =====================================================
-
+# 3. Instalar dependencias
 COPY requirements.txt .
-
 RUN pip install --no-cache-dir -r requirements.txt
 
-
-# =====================================================
-# 4. COPIAR ARCHIVOS DE LA APLICACIÓN
-# =====================================================
-
+# 4. Copiar la aplicación, el modelo, los informes y el tema
 COPY src/ ./src/
 COPY models/ ./models/
+COPY reports/ ./reports/
+COPY .streamlit/ ./.streamlit/
 
-
-# =====================================================
-# 5. CONFIGURAR STREAMLIT
-# =====================================================
-
+# 5. Arrancar Streamlit
 EXPOSE 8501
-
 CMD ["streamlit", "run", "src/app.py", "--server.address=0.0.0.0", "--server.port=8501"]
