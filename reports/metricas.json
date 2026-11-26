@@ -1,0 +1,14 @@
+{
+  "modelo": "GradientBoosting",
+  "umbral": 0.3073249980692973,
+  "recall_objetivo": 0.75,
+  "test": {
+    "accuracy": 0.7693399574166075,
+    "precision": 0.5468451242829828,
+    "recall": 0.7647058823529411,
+    "f1": 0.6376811594202898,
+    "roc_auc": 0.8463406442946085,
+    "brier": 0.1350677724829223
+  },
+  "max_diferencia_train_validacion": 0.027926421404682156
+}

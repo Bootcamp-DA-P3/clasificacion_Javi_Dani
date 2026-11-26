@@ -1,397 +1,263 @@
-import pandas as pd
-import numpy as np
-import joblib
+"""Entrenamiento de CHURN GUARD.
 
+Uso:  python src/train.py
+Genera el modelo en models/ y las métricas y gráficas en reports/.
+"""
+
+import json
 from pathlib import Path
 
-from sklearn.model_selection import train_test_split
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.impute import SimpleImputer
+import joblib
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from sklearn.compose import ColumnTransformer, make_column_selector
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.inspection import permutation_importance
 from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
-
 from sklearn.metrics import (
-    accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    roc_auc_score,
-    classification_report,
-    confusion_matrix,
-    precision_recall_curve
+    ConfusionMatrixDisplay, PrecisionRecallDisplay, RocCurveDisplay,
+    accuracy_score, brier_score_loss, f1_score, precision_recall_curve,
+    precision_score, recall_score, roc_auc_score,
 )
+from sklearn.model_selection import (
+    RandomizedSearchCV, StratifiedKFold, cross_val_predict, train_test_split,
+)
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
 
-
-# =====================================================
-# 1. RUTAS DEL PROYECTO
-# =====================================================
+from features import add_features
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-
 DATA_PATH = BASE_DIR / "data" / "WA_Fn-UseC_-Telco-Customer-Churn.csv"
-
-MODELS_DIR = BASE_DIR / "models"
-MODELS_DIR.mkdir(exist_ok=True)
-
-MODEL_PATH = MODELS_DIR / "churn_model.pkl"
+MODEL_PATH = BASE_DIR / "models" / "churn_model.pkl"
+REPORTS_DIR = BASE_DIR / "reports"
 
 RANDOM_STATE = 42
-
-# Recall mínimo deseado al elegir el umbral (None = maximizar F1)
-TARGET_RECALL = None  # por ejemplo, 0.75
-
-
-# =====================================================
-# 2. CARGA DEL DATASET
-# =====================================================
-
-df = pd.read_csv(DATA_PATH)
-
-print("Dataset cargado correctamente")
-print(f"Dimensiones: {df.shape}")
-
-
-# =====================================================
-# 3. LIMPIEZA DE DATOS
-# =====================================================
-
-df_clean = df.copy()
-
-# Eliminar espacios sobrantes en variables de texto
-for col in df_clean.select_dtypes(include=["object", "str"]).columns:
-    df_clean[col] = df_clean[col].str.strip()
-
-# Convertir cadenas vacías en valores nulos
-df_clean.replace("", np.nan, inplace=True)
-
-# Convertir TotalCharges a formato numérico
-df_clean["TotalCharges"] = pd.to_numeric(
-    df_clean["TotalCharges"],
-    errors="coerce"
-)
-
-# Corregir TotalCharges de clientes con tenure = 0
-df_clean.loc[
-    (df_clean["tenure"] == 0) &
-    (df_clean["TotalCharges"].isna()),
-    "TotalCharges"
-] = 0
-
-# Comprobar limpieza
-print("\nValores ausentes:")
-print(df_clean.isnull().sum().sum())
-
-print("\nFilas duplicadas:")
-print(df_clean.duplicated().sum())
-
-
-# =====================================================
-# 4. INGENIERÍA DE VARIABLES
-# =====================================================
-
-service_cols = [
-    "PhoneService", "MultipleLines", "OnlineSecurity", "OnlineBackup",
-    "DeviceProtection", "TechSupport", "StreamingTV", "StreamingMovies"
-]
-
-# Número de servicios contratados
-df_clean["NumServices"] = (df_clean[service_cols] == "Yes").sum(axis=1)
-
-# Cargo medio mensual real (evita dividir entre 0)
-df_clean["AvgMonthlyCharge"] = df_clean["TotalCharges"] / df_clean["tenure"].replace(0, np.nan)
-df_clean["AvgMonthlyCharge"] = df_clean["AvgMonthlyCharge"].fillna(df_clean["MonthlyCharges"])
-
-
-# =====================================================
-# 5. SEPARACIÓN DE VARIABLES
-# =====================================================
-
-# Variables predictoras
-X = df_clean.drop(
-    columns=["customerID", "Churn"]
-)
-
-# Variable objetivo
-y = df_clean["Churn"].map({
-    "No": 0,
-    "Yes": 1
-})
-
-print("\nDimensiones de X:", X.shape)
-print("Dimensiones de y:", y.shape)
-
-print("\nDistribución de la variable objetivo:")
-print(y.value_counts())
-
-
-# =====================================================
-# 6. DIVISIÓN DE LOS DATOS
-# =====================================================
-
-# Separar el 20 % para test
-X_train_val, X_test, y_train_val, y_test = train_test_split(
-    X,
-    y,
-    test_size=0.20,
-    random_state=RANDOM_STATE,
-    stratify=y
-)
-
-# Separar validación del conjunto restante
-X_train, X_val, y_train, y_val = train_test_split(
-    X_train_val,
-    y_train_val,
-    test_size=0.20,
-    random_state=RANDOM_STATE,
-    stratify=y_train_val
-)
-
-
-# =====================================================
-# 7. COMPROBACIÓN DE LAS DIVISIONES
-# =====================================================
-
-print("\nTAMAÑO DE LOS CONJUNTOS")
-
-print("Entrenamiento:", X_train.shape)
-print("Validación:", X_val.shape)
-print("Test:", X_test.shape)
-
-print("\nDISTRIBUCIÓN DE CHURN")
-
-print("Entrenamiento:")
-print(y_train.value_counts(normalize=True))
-
-print("\nValidación:")
-print(y_val.value_counts(normalize=True))
-
-print("\nTest:")
-print(y_test.value_counts(normalize=True))
-
-
-# =====================================================
-# 8. IDENTIFICACIÓN DE VARIABLES
-# =====================================================
-
-numeric_features = X.select_dtypes(
-    include=["int64", "float64"]
-).columns
-
-categorical_features = X.select_dtypes(
-    include=["object", "str"]
-).columns
-
-print("\nVARIABLES NUMÉRICAS:")
-print(list(numeric_features))
-
-print("\nVARIABLES CATEGÓRICAS:")
-print(list(categorical_features))
-
-
-# =====================================================
-# 9. PREPROCESAMIENTO
-# =====================================================
-
-# Transformador para variables numéricas
-numeric_transformer = Pipeline(steps=[
-    ("imputer", SimpleImputer(strategy="median")),
-    ("scaler", StandardScaler())
-])
-
-# Transformador para variables categóricas
-categorical_transformer = Pipeline(steps=[
-    ("imputer", SimpleImputer(strategy="most_frequent")),
-    ("onehot", OneHotEncoder(handle_unknown="ignore"))
-])
-
-preprocessor = ColumnTransformer(
-    transformers=[
-        ("num", numeric_transformer, numeric_features),
-        ("cat", categorical_transformer, categorical_features)
-    ]
-)
-
-print("\nPreprocesador creado correctamente")
-
-
-# =====================================================
-# 10. MODELOS CANDIDATOS
-# =====================================================
-
-candidates = {
-    "LogReg_balanced": LogisticRegression(
-        max_iter=2000,
-        class_weight="balanced"
-    ),
-    "RandomForest_balanced": RandomForestClassifier(
-        n_estimators=300,
-        max_depth=8,
-        min_samples_leaf=10,
-        class_weight="balanced",
-        random_state=RANDOM_STATE,
-        n_jobs=-1
-    )
-}
+TARGET_RECALL = 0.75   # detectar al menos el 75 % de los abandonos
+MAX_GAP = 0.05         # sobreajuste máximo permitido
 
 
 def build_pipeline(classifier):
-    return Pipeline(steps=[
+    preprocessor = ColumnTransformer([
+        ("num", StandardScaler(), make_column_selector(dtype_include=np.number)),
+        ("cat", OneHotEncoder(handle_unknown="ignore"),
+         make_column_selector(dtype_exclude=np.number)),
+    ])
+    return Pipeline([
+        ("features", FunctionTransformer(add_features)),
         ("preprocessor", preprocessor),
-        ("classifier", classifier)
+        ("classifier", classifier),
     ])
 
 
-# =====================================================
-# 11. FUNCIÓN PARA ELEGIR EL UMBRAL (SOLO CON VALIDACIÓN)
-# =====================================================
+def search_model(classifier, params, X, y, cv):
+    """Busca hiperparámetros y elige el mejor AUC sin sobreajuste."""
+    search = RandomizedSearchCV(
+        build_pipeline(classifier),
+        {f"classifier__{k}": v for k, v in params.items()},
+        n_iter=20, scoring="roc_auc", cv=cv, return_train_score=True,
+        random_state=RANDOM_STATE, n_jobs=-1, refit=False,
+    )
+    search.fit(X, y)
 
-def find_best_threshold(y_true, y_proba, target_recall=None):
-    precisions, recalls, thresholds = precision_recall_curve(y_true, y_proba)
+    results = pd.DataFrame(search.cv_results_)
+    results["gap"] = results["mean_train_score"] - results["mean_test_score"]
+    # Margen de seguridad: exigimos menos de 3 puntos de diferencia en AUC
+    valid = results[results["gap"] < 0.03]
+    if valid.empty:
+        valid = results.nsmallest(1, "gap")
+    best = valid.loc[valid["mean_test_score"].idxmax()]
 
-    # precisions y recalls tienen un elemento más que thresholds
-    precisions = precisions[:-1]
-    recalls = recalls[:-1]
-
-    f1_scores = 2 * precisions * recalls / (precisions + recalls + 1e-9)
-
-    if target_recall is not None:
-        valid = np.where(recalls >= target_recall)[0]
-        if len(valid) > 0:
-            # Entre los que cumplen el recall, el de mayor F1
-            best_idx = valid[np.argmax(f1_scores[valid])]
-            return thresholds[best_idx]
-
-    return thresholds[np.argmax(f1_scores)]
-
-
-# =====================================================
-# 12. ENTRENAMIENTO Y COMPARACIÓN EN VALIDACIÓN
-# =====================================================
-
-results = {}
-
-for name, clf in candidates.items():
-
-    print("\n" + "=" * 50)
-    print(f"MODELO: {name}")
-    print("=" * 50)
-
-    pipe = build_pipeline(clf)
-    pipe.fit(X_train, y_train)
-
-    # Probabilidades
-    train_proba = pipe.predict_proba(X_train)[:, 1]
-    val_proba = pipe.predict_proba(X_val)[:, 1]
-
-    # Umbral elegido en validación
-    threshold = find_best_threshold(y_val, val_proba, TARGET_RECALL)
-
-    # Predicciones con el umbral ajustado
-    train_pred = (train_proba >= threshold).astype(int)
-    val_pred = (val_proba >= threshold).astype(int)
-
-    # Métricas en validación
-    metrics = {
-        "threshold": threshold,
-        "accuracy": accuracy_score(y_val, val_pred),
-        "precision": precision_score(y_val, val_pred),
-        "recall": recall_score(y_val, val_pred),
-        "f1": f1_score(y_val, val_pred),
-        "roc_auc": roc_auc_score(y_val, val_proba),
-        "train_accuracy": accuracy_score(y_train, train_pred),
+    pipeline = build_pipeline(classifier).set_params(**best["params"])
+    summary = {
+        "cv_auc": best["mean_test_score"],
+        "cv_auc_std": best["std_test_score"],
+        "train_auc": best["mean_train_score"],
+        "gap_auc": best["gap"],
+        "params": best["params"],
     }
-    metrics["gap"] = abs(metrics["train_accuracy"] - metrics["accuracy"])
-
-    results[name] = {"pipeline": pipe, "metrics": metrics, "val_pred": val_pred}
-
-    print(f"Umbral:    {metrics['threshold']:.3f}")
-    print(f"Accuracy:  {metrics['accuracy']:.4f}")
-    print(f"Precision: {metrics['precision']:.4f}")
-    print(f"Recall:    {metrics['recall']:.4f}")
-    print(f"F1:        {metrics['f1']:.4f}")
-    print(f"ROC-AUC:   {metrics['roc_auc']:.4f}")
-
-    print("\nINFORME DE CLASIFICACIÓN (validación)")
-    print(classification_report(y_val, val_pred))
-
-    print("MATRIZ DE CONFUSIÓN (validación)")
-    print(confusion_matrix(y_val, val_pred))
-
-    # Comprobación del overfitting
-    print("\nCOMPROBACIÓN DEL OVERFITTING")
-    print("----------------------------")
-    print(f"Accuracy entrenamiento: {metrics['train_accuracy']:.4f}")
-    print(f"Accuracy validación:     {metrics['accuracy']:.4f}")
-    print(f"Diferencia:              {metrics['gap']:.4f}")
-
-    if metrics["gap"] < 0.05:
-        print("Cumple el requisito de diferencia inferior al 5 %")
-    else:
-        print("No cumple el requisito de diferencia inferior al 5 %")
+    return pipeline, summary
 
 
-# =====================================================
-# 13. SELECCIÓN DEL MEJOR MODELO
-# =====================================================
-
-# Se prefieren los modelos que cumplen el requisito de overfitting;
-# entre ellos, el de mayor F1 en validación
-valid_models = {
-    name: r for name, r in results.items() if r["metrics"]["gap"] < 0.05
-}
-
-pool = valid_models if valid_models else results
-
-best_name = max(pool, key=lambda n: pool[n]["metrics"]["f1"])
-best_pipeline = results[best_name]["pipeline"]
-best_threshold = results[best_name]["metrics"]["threshold"]
-
-print("\n" + "=" * 50)
-print(f"MODELO SELECCIONADO: {best_name}")
-print(f"Umbral seleccionado: {best_threshold:.3f}")
-print("=" * 50)
+def choose_threshold(y_true, proba, target_recall):
+    """Umbral más alto que alcanza el recall objetivo."""
+    _, recalls, thresholds = precision_recall_curve(y_true, proba)
+    return float(thresholds[recalls[:-1] >= target_recall].max())
 
 
-# =====================================================
-# 14. EVALUACIÓN FINAL EN TEST (UNA SOLA VEZ)
-# =====================================================
-
-test_proba = best_pipeline.predict_proba(X_test)[:, 1]
-test_pred = (test_proba >= best_threshold).astype(int)
-
-print("\nRESULTADOS EN TEST")
-print("------------------")
-print(f"Accuracy:  {accuracy_score(y_test, test_pred):.4f}")
-print(f"Precision: {precision_score(y_test, test_pred):.4f}")
-print(f"Recall:    {recall_score(y_test, test_pred):.4f}")
-print(f"F1:        {f1_score(y_test, test_pred):.4f}")
-print(f"ROC-AUC:   {roc_auc_score(y_test, test_proba):.4f}")
-
-print("\nINFORME DE CLASIFICACIÓN (test)")
-print(classification_report(y_test, test_pred))
-
-print("MATRIZ DE CONFUSIÓN (test)")
-print(confusion_matrix(y_test, test_pred))
+def get_metrics(y_true, proba, threshold):
+    pred = (proba >= threshold).astype(int)
+    return {
+        "accuracy": accuracy_score(y_true, pred),
+        "precision": precision_score(y_true, pred),
+        "recall": recall_score(y_true, pred),
+        "f1": f1_score(y_true, pred),
+        "roc_auc": roc_auc_score(y_true, proba),
+        "brier": brier_score_loss(y_true, proba),
+    }
 
 
-# =====================================================
-# 15. GUARDAR EL MODELO Y EL UMBRAL
-# =====================================================
+def cross_validated_check(pipeline, X, y, cv, threshold):
+    """Compara las métricas de train y validación en cada partición."""
+    train_scores, val_scores = [], []
+    for train_idx, val_idx in cv.split(X, y):
+        pipeline.fit(X.iloc[train_idx], y.iloc[train_idx])
+        for idx, scores in ((train_idx, train_scores), (val_idx, val_scores)):
+            proba = pipeline.predict_proba(X.iloc[idx])[:, 1]
+            scores.append(get_metrics(y.iloc[idx], proba, threshold))
+    table = pd.DataFrame({
+        "train": pd.DataFrame(train_scores).mean(),
+        "validacion": pd.DataFrame(val_scores).mean(),
+    })
+    table["diferencia"] = table["train"] - table["validacion"]
+    return table
 
-joblib.dump(
-    {
-        "model": best_pipeline,
-        "threshold": best_threshold,
-        "model_name": best_name
-    },
-    MODEL_PATH
-)
 
-print(f"\nModelo guardado en: {MODEL_PATH}")
+def save_figure(name):
+    plt.tight_layout()
+    plt.savefig(REPORTS_DIR / name, dpi=150)
+    plt.close()
 
-# Para usarlo después:
-# artefacto = joblib.load(MODEL_PATH)
-# proba = artefacto["model"].predict_proba(X_nuevo)[:, 1]
-# pred = (proba >= artefacto["threshold"]).astype(int)
+
+def main():
+    MODEL_PATH.parent.mkdir(exist_ok=True)
+    REPORTS_DIR.mkdir(exist_ok=True)
+
+    # 1. Datos: el test se aparta y solo se usa al final
+    df = pd.read_csv(DATA_PATH)
+    X = df.drop(columns=["customerID", "Churn"])
+    y = df["Churn"].map({"No": 0, "Yes": 1})
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.20, stratify=y, random_state=RANDOM_STATE
+    )
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
+
+    # 2. Modelos candidatos y sus hiperparámetros
+    candidates = {
+        "LogisticRegression": (
+            LogisticRegression(max_iter=5000),
+            {"C": list(np.logspace(-3, 2, 40))},
+        ),
+        "RandomForest": (
+            RandomForestClassifier(random_state=RANDOM_STATE),
+            {"n_estimators": [200, 300], "max_depth": [4, 5, 6, 7],
+             "min_samples_leaf": [10, 20, 40], "max_features": ["sqrt", 0.5]},
+        ),
+        "GradientBoosting": (
+            GradientBoostingClassifier(random_state=RANDOM_STATE),
+            {"n_estimators": [100, 150, 200, 300], "max_depth": [1, 2, 3],
+             "learning_rate": [0.01, 0.02, 0.03, 0.05],
+             "min_samples_leaf": [10, 20, 40], "subsample": [0.7, 0.8, 1.0]},
+        ),
+    }
+
+    pipelines, comparison = {}, {}
+    for name, (classifier, params) in candidates.items():
+        print(f"Optimizando {name}...")
+        pipelines[name], comparison[name] = search_model(
+            classifier, params, X_train, y_train, cv
+        )
+
+    table = pd.DataFrame(comparison).T
+    table.to_csv(REPORTS_DIR / "comparacion_modelos.csv")
+    print("\nCOMPARACIÓN (validación cruzada)")
+    print(table.drop(columns="params").astype(float).round(4))
+
+    # Entre los modelos de conjunto y la regresión, gana el mayor AUC
+    best_name = max(comparison, key=lambda n: comparison[n]["cv_auc"])
+    model = pipelines[best_name]
+    print(f"\nModelo seleccionado: {best_name}")
+    print(comparison[best_name]["params"])
+
+    # 3. Umbral calculado con predicciones fuera de muestra (sin tocar test)
+    oof = cross_val_predict(model, X_train, y_train, cv=cv, method="predict_proba")[:, 1]
+    threshold = choose_threshold(y_train, oof, TARGET_RECALL)
+    print(f"Umbral: {threshold:.3f}")
+
+    # 4. Sobreajuste con el umbral final
+    overfit = cross_validated_check(model, X_train, y_train, cv, threshold)
+    overfit.to_csv(REPORTS_DIR / "sobreajuste.csv")
+    print("\nSOBREAJUSTE")
+    print(overfit.round(4))
+    max_gap = overfit.drop(index="brier")["diferencia"].abs().max()
+    print(f"Máxima diferencia: {max_gap:.2%} "
+          f"({'CUMPLE' if max_gap < MAX_GAP else 'NO CUMPLE'})")
+
+    # 5. Evaluación final en test
+    model.fit(X_train, y_train)
+    proba = model.predict_proba(X_test)[:, 1]
+    pred = (proba >= threshold).astype(int)
+    test_metrics = get_metrics(y_test, proba, threshold)
+    print("\nTEST")
+    for key, value in test_metrics.items():
+        print(f"{key:10s} {value:.4f}")
+
+    # 6. Gráficas para el informe
+    ConfusionMatrixDisplay.from_predictions(
+        y_test, pred, display_labels=["Se queda", "Se va"], cmap="Blues"
+    )
+    plt.title("Matriz de confusión (test)")
+    save_figure("matriz_confusion.png")
+
+    RocCurveDisplay.from_predictions(y_test, proba, name=best_name)
+    plt.title("Curva ROC (test)")
+    save_figure("curva_roc.png")
+
+    PrecisionRecallDisplay.from_predictions(y_test, proba, name=best_name)
+    plt.title("Curva precisión-recall (test)")
+    save_figure("curva_precision_recall.png")
+
+    # Importancia de las variables originales (por permutación)
+    importance = permutation_importance(
+        model, X_test, y_test, scoring="roc_auc",
+        n_repeats=20, random_state=RANDOM_STATE,
+    )
+    ranking = pd.Series(importance.importances_mean, index=X_test.columns)
+    ranking.sort_values(ascending=False).to_csv(
+        REPORTS_DIR / "importancia_variables.csv", header=["caida_auc"]
+    )
+    ranking.sort_values().tail(10).plot.barh(figsize=(8, 5))
+    plt.title("Variables más importantes")
+    plt.xlabel("Caída del ROC-AUC al desordenar la variable")
+    save_figure("importancia_variables.png")
+
+    # 7. Análisis de errores
+    errors = X_test.copy()
+    errors["real"] = y_test
+    errors["probabilidad"] = proba
+    errors["resultado"] = np.select(
+        [(y_test == 1) & (pred == 1), (y_test == 0) & (pred == 0),
+         (y_test == 0) & (pred == 1)],
+        ["acierto_se_va", "acierto_se_queda", "falsa_alarma"],
+        default="fuga_no_detectada",
+    )
+    errors.to_csv(REPORTS_DIR / "predicciones_test.csv", index=False)
+    profile = errors.groupby("resultado")[["tenure", "MonthlyCharges", "probabilidad"]].mean()
+    profile["clientes"] = errors["resultado"].value_counts()
+    profile.to_csv(REPORTS_DIR / "analisis_errores.csv")
+    print("\nANÁLISIS DE ERRORES")
+    print(profile.round(2))
+
+    # 8. Guardar modelo y resumen
+    joblib.dump(
+        {"model": model, "threshold": threshold, "model_name": best_name},
+        MODEL_PATH, compress=3,
+    )
+    summary = {
+        "modelo": best_name,
+        "umbral": threshold,
+        "recall_objetivo": TARGET_RECALL,
+        "test": test_metrics,
+        "max_diferencia_train_validacion": max_gap,
+    }
+    (REPORTS_DIR / "metricas.json").write_text(
+        json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    print(f"\nModelo guardado en: {MODEL_PATH}")
+
+
+if __name__ == "__main__":
+    main()

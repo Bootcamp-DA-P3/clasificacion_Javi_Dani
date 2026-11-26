@@ -1,0 +1,4 @@
+,cv_auc,cv_auc_std,train_auc,gap_auc,params
+LogisticRegression,0.8494843023057834,0.011369406150432899,0.8548151423886411,0.0053308400828576685,{'classifier__C': np.float64(22.854638641349883)}
+RandomForest,0.8478564173170021,0.010038031708871598,0.8771487263890109,0.02929230907200875,"{'classifier__n_estimators': 300, 'classifier__min_samples_leaf': 20, 'classifier__max_features': 'sqrt', 'classifier__max_depth': 7}"
+GradientBoosting,0.8499988898225516,0.010960475774907611,0.8705122266067802,0.02051333678422862,"{'classifier__subsample': 0.8, 'classifier__n_estimators': 200, 'classifier__min_samples_leaf': 20, 'classifier__max_depth': 3, 'classifier__learning_rate': 0.02}"
